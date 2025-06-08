@@ -1,158 +1,152 @@
 import os
 import re
-
+import logging
 import cv2
 import numpy as np
 import pytesseract
 from PIL import Image
+from datetime import datetime
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def save_debug_image(img, step_name, filename):
+    """Save intermediate preprocessing step for debugging"""
+    try:
+        # Create debug directory if it doesn't exist
+        debug_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "debug")
+        if not os.path.exists(debug_dir):
+            os.makedirs(debug_dir)
+        
+        # Create timestamp-based directory for this run
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = os.path.join(debug_dir, timestamp)
+        if not os.path.exists(run_dir):
+            os.makedirs(run_dir)
+        
+        # Save the image
+        base_name = os.path.splitext(os.path.basename(filename))[0]
+        output_path = os.path.join(run_dir, f"{base_name}_{step_name}.png")
+        cv2.imwrite(output_path, img)
+        logger.info(f"Saved debug image: {output_path}")
+    except Exception as e:
+        logger.error(f"Error saving debug image: {str(e)}")
 
 def process_image(img_path):
-    temp_filename = resize_image(img_path)
-    img = remove_noise_and_smooth(temp_filename)
-    img = fix_rotation(img)
-    # img = remove_lines(img)
-
-    return img
-
-
-def resize_image(img_path):
     try:
-        img = Image.open(img_path)
-        length_x, width_y = img.size
-        factor = max(1, int(1800 / length_x))  # 1800 for tesserect
-        size = factor * length_x, factor * width_y
-        im_resized = img.resize(size, Image.ANTIALIAS)
-
-        import tempfile
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".TIFF")
-        temp_filename = temp_file.name
-        im_resized.save(temp_filename, dpi=(300, 300))  # best for OCR
-
-        return temp_filename
-    except IOError:
-        print("Error while reading the file.")
-
-
-def remove_noise_and_smooth(img_path):
-    try:
+        # Read image
         img = cv2.imread(img_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # Applying erosion and dilation to remove the noise
-        # img = cv2.bitwise_not(img)
-        # kernel = np.ones((5, 5), np.uint8)
-        # img = cv2.erode(img, kernel, iterations=1)
-        # img = cv2.dilate(img, kernel, iterations=1)
-        # show_wait_destroy('dilate', img)
-        # img = cv2.bitwise_not(img)
-
-        kernel = np.ones((1, 1), np.uint8)
-        opening = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel)
-        closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
-        img = cv2.bitwise_or(img, closing)
-        show_wait_destroy('bitwise_or', img)
-
-        # img = apply_threshold(img, 1)
-        # show_wait_destroy('threshold', img)
-        # img = smooth_image(img)
-
+        if img is None:
+            raise ValueError(f"Could not read image at {img_path}")
+        
+        # Apply preprocessing steps
+        img = preprocess_for_ocr(img, img_path)
+        
+        # Fix rotation
+        img = fix_rotation(img)
+        save_debug_image(img, "10_final", img_path)
+        
         return img
-    except IOError:
-        print("Error while reading the file.")
+    except Exception as e:
+        logger.error(f"Error processing image {img_path}: {str(e)}")
+        raise
 
+def process_image_file(img_path):
+    try:
+        logger.info(f"Processing image: {img_path}")
+        img = process_image(img_path)
+        results = get_ocr_text(img)
+        for psm, (text, confidence) in results.items():
+            logger.info(f"PSM {psm} - OCR confidence for {img_path}: {confidence:.2f}%")
+            output_path = f"output/out_{os.path.basename(img_path)}_psm{psm}.txt"
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(f"OCR Confidence: {confidence:.2f}%\n\n{text}")
+            logger.info(f"Output written to {output_path}")
+    except Exception as e:
+        logger.error(f"Error processing image: {str(e)}")
 
-def apply_threshold(img, argument):
-    switcher = {
-        1: cv2.threshold(cv2.GaussianBlur(img, (9, 9), 0), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-        2: cv2.threshold(cv2.GaussianBlur(img, (7, 7), 0), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-        3: cv2.threshold(cv2.GaussianBlur(img, (5, 5), 0), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-        4: cv2.threshold(cv2.medianBlur(img, 5), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-        5: cv2.threshold(cv2.medianBlur(img, 3), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-        6: cv2.adaptiveThreshold(cv2.GaussianBlur(img, (5, 5), 0), 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                 cv2.THRESH_BINARY, 31, 2),
-        7: cv2.adaptiveThreshold(cv2.medianBlur(img, 3), 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31,
-                                 2),
-    }
-    return switcher.get(argument, "Invalid method")
-
-
-def smooth_image(img):
-    # Apply blur to smooth out the edges
-    blur_img = cv2.GaussianBlur(img, (1, 1), 0)
-    show_wait_destroy('blur', blur_img)
-
-    return blur_img
-
+def preprocess_for_ocr(img, original_filename):
+    try:
+        save_debug_image(img, "00_original", original_filename)
+        if len(img.shape) == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        save_debug_image(img, "01_grayscale", original_filename)
+        # Resize if text is small
+        h, w = img.shape
+        if max(h, w) < 1200:
+            scale = 1200 / max(h, w)
+            img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        save_debug_image(img, "02_resized", original_filename)
+        # Gentle denoise
+        img = cv2.medianBlur(img, 3)
+        save_debug_image(img, "03_median_blur", original_filename)
+        # Adaptive threshold
+        img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 17, 3)
+        save_debug_image(img, "04_adaptive_threshold", original_filename)
+        return img
+    except Exception as e:
+        logger.error(f"Error in preprocessing: {str(e)}")
+        return img
 
 def fix_rotation(img):
-    rotated_img = img
-    # osd: orientation and script detection
-    tess_data = pytesseract.image_to_osd(img, nice=1)
-    angle = int(re.search(r"(?<=Rotate: )\d+", tess_data).group(0))
-    print("angle: " + str(angle))
+    try:
+        # Convert to PIL Image for DPI setting
+        img_pil = Image.fromarray(img)
+        img_pil.info['dpi'] = (300, 300)
+        img = np.array(img_pil)
+        
+        # Try to detect rotation
+        custom_config = r'--oem 3 --psm 0 -l fas+eng'
+        try:
+            tess_data = pytesseract.image_to_osd(img, config=custom_config, nice=1)
+            angle = int(re.search(r"(?<=Rotate: )\d+", tess_data).group(0))
+            logger.info(f"Detected rotation angle: {angle}")
+            
+            if angle != 0 and angle != 360:
+                (h, w) = img.shape[:2]
+                center = (w / 2, h / 2)
+                rotation_mat = cv2.getRotationMatrix2D(center, -angle, 1.0)
+                
+                # Calculate new image dimensions
+                abs_cos = abs(rotation_mat[0, 0])
+                abs_sin = abs(rotation_mat[0, 1])
+                bound_w = int(h * abs_sin + w * abs_cos)
+                bound_h = int(h * abs_cos + w * abs_sin)
+                
+                # Adjust rotation matrix
+                rotation_mat[0, 2] += bound_w / 2 - center[0]
+                rotation_mat[1, 2] += bound_h / 2 - center[1]
+                
+                # Perform rotation
+                img = cv2.warpAffine(img, rotation_mat, (bound_w, bound_h))
+        except Exception as e:
+            logger.warning(f"Could not detect rotation: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"Error in rotation fix: {str(e)}")
+        
+    return img
 
-    if angle != 0 and angle != 360:
-        (h, w) = img.shape[:2]
-        center = (w / 2, h / 2)
-
-        # Perform the rotation
-        rotation_mat = cv2.getRotationMatrix2D(center, -angle, 1.0)
-
-        # Fixing the image cut-off by calculating the new center
-        abs_cos = abs(rotation_mat[0, 0])
-        abs_sin = abs(rotation_mat[0, 1])
-
-        bound_w = int(h * abs_sin + w * abs_cos)
-        bound_h = int(h * abs_cos + w * abs_sin)
-
-        rotation_mat[0, 2] += bound_w / 2 - center[0]
-        rotation_mat[1, 2] += bound_h / 2 - center[1]
-
-        rotated_img = cv2.warpAffine(img, rotation_mat, (bound_w, bound_h))
-
-    return rotated_img
-
-
-def remove_lines(img):
-    # Remove lines to improve accuracy of tabular documents
-    # https://stackoverflow.com/questions/33949831/whats-the-way-to-remove-all-lines-and-borders-in-imagekeep-texts-programmatic?answertab=votes#tab-top
-    result = img.copy()
-    thresh = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-
-    # Remove horizontal lines
-    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
-    remove_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
-    cnts = cv2.findContours(remove_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
-    for c in cnts:
-        cv2.drawContours(result, [c], -1, (255, 255, 255), 5)
-
-    # Remove vertical lines
-    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
-    remove_vertical = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
-    cnts = cv2.findContours(remove_vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
-    for c in cnts:
-        cv2.drawContours(result, [c], -1, (255, 255, 255), 5)
-
-    show_wait_destroy('nolines', result)
-
-    return result
-
-
-def show_wait_destroy(winname, img, active=False):
-    if active:
-        cv2.imshow(winname, cv2.resize(img, (960, 540)))
-        cv2.moveWindow(winname, 500, 0)
-        cv2.waitKey(0)
-        cv2.destroyWindow(winname)
-
-
-def save_image(img, img_path, method, active=False):
-    if active:
-        # Save the filtered image in the output directory
-        filename = os.path.basename(img_path).split('.')[0]
-        filename = filename.split()[0]
-        save_path = os.path.join("../output", filename + "_filter_" + method + ".jpg")
-        cv2.imwrite(save_path, img)
+def get_ocr_text(img, lang=None):
+    """Get OCR text with confidence scores for different PSM modes, Farsi only"""
+    try:
+        psm_modes = [3, 4, 6, 11]
+        results = {}
+        for psm in psm_modes:
+            custom_config = f'--oem 3 --psm {psm} -l fas --dpi 300 -c preserve_interword_spaces=1'
+            data = pytesseract.image_to_data(img, config=custom_config, output_type=pytesseract.Output.DICT)
+            text_parts = []
+            confidences = []
+            for i in range(len(data['text'])):
+                if int(data['conf'][i]) > 20:
+                    text_parts.append(data['text'][i])
+                    confidences.append(int(data['conf'][i]))
+            text = ' '.join(text_parts)
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+            results[psm] = (text, avg_confidence)
+            logger.info(f"PSM {psm} - OCR completed with average confidence: {avg_confidence:.2f}%")
+        return results
+    except Exception as e:
+        logger.error(f"Error in OCR: {str(e)}")
+        return {}
