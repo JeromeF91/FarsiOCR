@@ -4,6 +4,18 @@ This OCR application uses open source text recognition [Tesseract 5.1.0](https:/
 
 Preprocessing is applied to each image before using `tesseract`. This is done to improve the performance of tesseract and also fix the rotation angle of the image (if needed). After converting the image to a `txt` file, the quality of ocr can be measured using the Levenshtein distance metric (By putting original.docx of the intended image into Data directory). 
 
+## Features
+- Automatic image preprocessing including:
+  - Grayscale conversion
+  - Adaptive thresholding
+  - Denoising
+  - Automatic rotation detection and correction
+  - Image resizing for better OCR results
+- Multiple PSM (Page Segmentation Mode) testing
+- Debug image generation for each preprocessing step
+- Support for both PDF and image files
+- Docker support for easy deployment
+
 ## Installation
 1. Install Tesseract
 
@@ -31,7 +43,29 @@ pip install -r requirements.txt
 docker build -t farsiocr .
 docker run --name ocr -it --rm -v $PWD/data:/app/data -v $PWD/output:/app/output farsiocr
 ```
-## How to use?
-Copy your pdf or image files into the `data` directory (a sample image in the Data directory is downloaded from the internet). 
 
-Run the `src/ocr.py` and the results will be created in the `output` directory.
+## How to use?
+1. Copy your PDF or image files into the `data` directory (a sample image in the Data directory is downloaded from the internet). 
+
+2. Run the OCR process:
+```shell script
+python src/ocr.py
+```
+
+3. For testing different PSM modes:
+```shell script
+python src/psm_test.py
+```
+
+The results will be created in the `output` directory, and debug images (if enabled) will be saved in the `debug` directory.
+
+## Debugging
+The application generates debug images for each preprocessing step, which can be found in the `debug` directory. Each run creates a timestamped subdirectory containing:
+- Original image
+- Grayscale conversion
+- Resized image
+- Denoised image
+- Thresholded image
+- Final preprocessed image
+
+This helps in understanding how each preprocessing step affects the image quality and OCR results.
